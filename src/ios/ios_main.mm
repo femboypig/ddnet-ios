@@ -27,6 +27,12 @@ extern "C" int SDL_main(int argc, char **argv);
 @end
 
 @implementation DDNetRootViewController
+- (void)loadView
+{
+	CGRect bounds = [UIScreen mainScreen].bounds;
+	self.view = [[UIView alloc] initWithFrame:bounds];
+	self.view.backgroundColor = [UIColor blackColor];
+}
 - (BOOL)shouldAutorotate
 {
 	return YES;
@@ -50,9 +56,63 @@ extern "C" int SDL_main(int argc, char **argv);
 @end
 
 static UIWindow *s_pEarlyWindow = nil;
+static id (*s_pOrigInitFunc)(id, SEL) = NULL;
 static UIWindow *(*s_pOrigWindowFunc)(id, SEL) = NULL;
 static void (*s_pOrigSetWindowFunc)(id, SEL, UIWindow *) = NULL;
 static BOOL (*s_pOrigLaunchFunc)(id, SEL, UIApplication *, NSDictionary *) = NULL;
+
+static UIWindow *EnsureEarlyWindow()
+{
+	if(s_pEarlyWindow != nil)
+	{
+		return s_pEarlyWindow;
+	}
+
+	CGRect bounds = [UIScreen mainScreen].bounds;
+	if(bounds.size.width <= 0 || bounds.size.height <= 0)
+	{
+		bounds = CGRectMake(0, 0, 844, 390);
+	}
+
+	s_pEarlyWindow = [[UIWindow alloc] initWithFrame:bounds];
+	s_pEarlyWindow.backgroundColor = [UIColor blackColor];
+
+	DDNetRootViewController *rootVC = [[DDNetRootViewController alloc] init];
+	s_pEarlyWindow.rootViewController = rootVC;
+
+	if(@available(iOS 13.0, *))
+	{
+		for(UIScene *scene in [UIApplication sharedApplication].connectedScenes)
+		{
+			if([scene isKindOfClass:[UIWindowScene class]])
+			{
+				s_pEarlyWindow.windowScene = (UIWindowScene *)scene;
+				printf("[DDNet] Connected early window to UIWindowScene %p\n", scene);
+				break;
+			}
+		}
+	}
+
+	[s_pEarlyWindow makeKeyAndVisible];
+	printf("[DDNet] Created early UIWindow (%dx%d, scene=%p)\n",
+		(int)bounds.size.width, (int)bounds.size.height,
+		(@available(iOS 13.0, *)) ? s_pEarlyWindow.windowScene : nil);
+	fflush(stdout);
+
+	return s_pEarlyWindow;
+}
+
+static id DDNet_SDLUIKitDelegate_init(id self, SEL _cmd)
+{
+	printf("[DDNet] SDLUIKitDelegate init\n");
+	fflush(stdout);
+	if(s_pOrigInitFunc)
+	{
+		self = s_pOrigInitFunc(self, _cmd);
+	}
+	EnsureEarlyWindow();
+	return self;
+}
 
 static UIWindow *DDNet_SDLUIKitDelegate_window(id self, SEL _cmd)
 {
@@ -69,11 +129,13 @@ static UIWindow *DDNet_SDLUIKitDelegate_window(id self, SEL _cmd)
 			return w;
 		}
 	}
-	return s_pEarlyWindow;
+	return EnsureEarlyWindow();
 }
 
 static void DDNet_SDLUIKitDelegate_setWindow(id self, SEL _cmd, UIWindow *w)
 {
+	printf("[DDNet] SDLUIKitDelegate setWindow: %p\n", w);
+	fflush(stdout);
 	s_pEarlyWindow = w;
 	if(s_pOrigSetWindowFunc)
 	{
@@ -83,22 +145,9 @@ static void DDNet_SDLUIKitDelegate_setWindow(id self, SEL _cmd, UIWindow *w)
 
 static BOOL DDNet_SDLUIKitDelegate_didFinishLaunching(id self, SEL _cmd, UIApplication *app, NSDictionary *opts)
 {
-	printf("--- DDNet Early App Launch ---\n");
+	printf("[DDNet] SDLUIKitDelegate didFinishLaunchingWithOptions\n");
 	fflush(stdout);
-
-	if(s_pEarlyWindow == nil)
-	{
-		CGRect bounds = [UIScreen mainScreen].bounds;
-		s_pEarlyWindow = [[UIWindow alloc] initWithFrame:bounds];
-		s_pEarlyWindow.backgroundColor = [UIColor blackColor];
-		DDNetRootViewController *rootVC = [[DDNetRootViewController alloc] init];
-		rootVC.view.frame = bounds;
-		rootVC.view.backgroundColor = [UIColor blackColor];
-		s_pEarlyWindow.rootViewController = rootVC;
-		[s_pEarlyWindow makeKeyAndVisible];
-		printf("--- DDNet Created Initial UIWindow (%dx%d) ---\n", (int)bounds.size.width, (int)bounds.size.height);
-		fflush(stdout);
-	}
+	EnsureEarlyWindow();
 
 	BOOL result = YES;
 	if(s_pOrigLaunchFunc)
@@ -113,6 +162,29 @@ static UIInterfaceOrientationMask DDNet_SDLUIKitDelegate_supportedOrientations(i
 	return UIInterfaceOrientationMaskLandscape;
 }
 
+static void SetupSceneObserver()
+{
+	if(@available(iOS 13.0, *))
+	{
+		[[NSNotificationCenter defaultCenter] addObserverForName:UISceneWillConnectNotification
+			object:nil
+			queue:[NSOperationQueue mainQueue]
+			usingBlock:^(NSNotification *note) {
+				UIScene *scene = note.object;
+				if([scene isKindOfClass:[UIWindowScene class]] && s_pEarlyWindow != nil)
+				{
+					if(s_pEarlyWindow.windowScene == nil)
+					{
+						s_pEarlyWindow.windowScene = (UIWindowScene *)scene;
+						[s_pEarlyWindow makeKeyAndVisible];
+						printf("[DDNet] Attached early window to connected UIWindowScene %p\n", scene);
+						fflush(stdout);
+					}
+				}
+			}];
+	}
+}
+
 static void PatchSDLUIKitDelegate()
 {
 	Class cls = NSClassFromString(@"SDLUIKitDelegate");
@@ -121,6 +193,17 @@ static void PatchSDLUIKitDelegate()
 		printf("PatchSDLUIKitDelegate: SDLUIKitDelegate class not found!\n");
 		fflush(stdout);
 		return;
+	}
+
+	Method origInitMethod = class_getInstanceMethod(cls, @selector(init));
+	if(origInitMethod)
+	{
+		s_pOrigInitFunc = (id (*)(id, SEL))method_getImplementation(origInitMethod);
+		method_setImplementation(origInitMethod, (IMP)DDNet_SDLUIKitDelegate_init);
+	}
+	else
+	{
+		class_addMethod(cls, @selector(init), (IMP)DDNet_SDLUIKitDelegate_init, "@@:");
 	}
 
 	Method origWindowMethod = class_getInstanceMethod(cls, @selector(window));
@@ -151,12 +234,23 @@ static void PatchSDLUIKitDelegate()
 		s_pOrigLaunchFunc = (BOOL (*)(id, SEL, UIApplication *, NSDictionary *))method_getImplementation(origLaunchMethod);
 		method_setImplementation(origLaunchMethod, (IMP)DDNet_SDLUIKitDelegate_didFinishLaunching);
 	}
+	else
+	{
+		class_addMethod(cls, @selector(application:didFinishLaunchingWithOptions:), (IMP)DDNet_SDLUIKitDelegate_didFinishLaunching, "B@:@@");
+	}
 
 	Method origOrientMethod = class_getInstanceMethod(cls, @selector(application:supportedInterfaceOrientationsForWindow:));
-	if(!origOrientMethod)
+	if(origOrientMethod)
+	{
+		method_setImplementation(origOrientMethod, (IMP)DDNet_SDLUIKitDelegate_supportedOrientations);
+	}
+	else
 	{
 		class_addMethod(cls, @selector(application:supportedInterfaceOrientationsForWindow:), (IMP)DDNet_SDLUIKitDelegate_supportedOrientations, "Q@:@@");
 	}
+
+	SetupSceneObserver();
+
 	printf("PatchSDLUIKitDelegate: Successfully hooked SDLUIKitDelegate window and lifecycle\n");
 	fflush(stdout);
 }
@@ -297,6 +391,10 @@ int main(int argc, char **argv)
 		RedirectStdioToLog();
 		InstallCrashHandlers();
 		PatchSDLUIKitDelegate();
+		if([UIApplication sharedApplication] != nil)
+		{
+			EnsureEarlyWindow();
+		}
 	}
 	return SDL_UIKitRunApp(argc, argv, SDL_main);
 }
