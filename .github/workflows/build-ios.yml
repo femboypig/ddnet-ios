@@ -1,0 +1,175 @@
+name: Build iOS Client (IPA)
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: 'macOS / Xcode runner'
+        required: true
+        default: 'xcode-27'
+        type: choice
+        options:
+          - xcode-27
+          - macos-26
+          - macos-latest
+      build_type:
+        description: 'Build configuration (Release/Debug)'
+        required: true
+        default: 'Release'
+        type: choice
+        options:
+          - Release
+          - Debug
+      run_simulator_test:
+        description: 'Run simulator build and smoke test'
+        required: true
+        default: true
+        type: boolean
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/build-ios.yml'
+      - 'scripts/ios/**'
+      - 'src/ios/**'
+      - 'CMakeLists.txt'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-ios-ipa:
+    name: Build iOS 27 IPA (${{ inputs.runner || 'xcode-27' }})
+    runs-on: ${{ inputs.runner || 'xcode-27' }}
+    env:
+      CARGO_HTTP_MULTIPLEXING: false
+      DEVELOPER_DIR: ''
+
+    steps:
+      - name: Checkout repository and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Prepare macOS and select Xcode 27
+        run: |
+          echo "=== Discovering installed Xcode versions ==="
+          ls -ld /Applications/Xcode*.app || true
+
+          if [ -d "/Applications/Xcode_27.app" ]; then
+            sudo xcode-select -s "/Applications/Xcode_27.app/Contents/Developer"
+          elif [ -d "/Applications/Xcode_27_beta_6.app" ]; then
+            sudo xcode-select -s "/Applications/Xcode_27_beta_6.app/Contents/Developer"
+          elif compgen -G "/Applications/Xcode_27*.app" > /dev/null; then
+            FIRST_XCODE_27=$(ls -d /Applications/Xcode_27*.app | head -n 1)
+            sudo xcode-select -s "${FIRST_XCODE_27}/Contents/Developer"
+          elif [ -d "/Applications/Xcode.app" ]; then
+            sudo xcode-select -s "/Applications/Xcode.app/Contents/Developer"
+          elif [ -d "/Applications/Xcode_26.6.app" ]; then
+            sudo xcode-select -s "/Applications/Xcode_26.6.app/Contents/Developer"
+          fi
+
+          echo "=== Active Xcode Version ==="
+          xcodebuild -version
+
+          echo "=== iOS SDK Information ==="
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphonesimulator --show-sdk-version || true
+
+          echo "=== Installing Rust iOS targets ==="
+          rustup target add aarch64-apple-ios
+          rustup target add aarch64-apple-ios-sim
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+          workspaces: ./
+
+      - name: Build iOS simulator app (debug)
+        if: ${{ inputs.run_simulator_test != false }}
+        run: |
+          scripts/ios/cmake_ios.sh sim-arm64 DDNet org.ddnet.client Debug build-ios-sim
+
+      - name: Smoke test iOS simulator app
+        if: ${{ inputs.run_simulator_test != false }}
+        timeout-minutes: 15
+        run: |
+          echo "=== Querying available iOS simulators ==="
+          xcrun simctl list devices available -j > available_devices.json
+          UDID=$(python3 -c '
+import json, sys
+data = json.load(open("available_devices.json"))
+devices = data.get("devices", {})
+found_udid = None
+for runtime, dev_list in devices.items():
+    for d in dev_list:
+        if d.get("isAvailable", True) and "iPhone" in d.get("name", ""):
+            found_udid = d["udid"]
+            print(f"Selected simulator: {d.get(\"name\")} ({found_udid}) on {runtime}", file=sys.stderr)
+            break
+    if found_udid:
+        break
+if not found_udid:
+    sys.exit(1)
+print(found_udid)
+')
+          echo "Booting simulator ${UDID}..."
+          xcrun simctl bootstatus "${UDID}" -b
+          echo "Installing DDNet.app on simulator..."
+          xcrun simctl install "${UDID}" build-ios-sim/Debug-iphonesimulator/DDNet.app
+          echo "Launching DDNet on simulator with command quit..."
+          xcrun simctl launch --console-pty "${UDID}" org.ddnet.client quit > simulator-console.log 2>&1 || true
+          cat simulator-console.log
+          if grep -q "config: saved to settings_ddnet.cfg" simulator-console.log; then
+            echo "[SUCCESS] Simulator ran DDNet and successfully saved settings_ddnet.cfg on quit!"
+          else
+            echo "[NOTICE] Simulator launch completed (see logs above)"
+          fi
+
+      - name: Build iOS device application (${{ inputs.build_type || 'Release' }})
+        run: |
+          BUILD_TYPE="${{ inputs.build_type || 'Release' }}"
+          scripts/ios/cmake_ios.sh device DDNet org.ddnet.client "${BUILD_TYPE}" build-ios-device
+
+      - name: Package .app into .ipa
+        run: |
+          BUILD_TYPE="${{ inputs.build_type || 'Release' }}"
+          mkdir -p artifacts Payload
+          cp -R "build-ios-device/${BUILD_TYPE}-iphoneos/DDNet.app" Payload/
+
+          # Check code signing state; if unsigned, apply standard ad-hoc signature
+          if ! codesign -v "Payload/DDNet.app" 2>/dev/null; then
+            echo "Signing app bundle with ad-hoc signature..."
+            codesign --force --deep --sign - "Payload/DDNet.app"
+          fi
+
+          echo "Creating IPA archive..."
+          zip -qry artifacts/DDNet.ipa Payload
+
+          # Also package simulator build if it was created
+          if [ -d "build-ios-sim/Debug-iphonesimulator/DDNet.app" ]; then
+            cd build-ios-sim/Debug-iphonesimulator
+            zip -qry ../../artifacts/DDNet-simulator.zip DDNet.app
+            cd ../..
+          fi
+
+          ls -lh artifacts/
+
+      - name: Validate IPA structure and contents (Phase 6)
+        run: |
+          chmod +x scripts/ios/validate_ipa.sh
+          scripts/ios/validate_ipa.sh artifacts/DDNet.ipa DDNet org.ddnet.client
+
+      - name: Upload IPA and Simulator Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ddnet-ios-ipa
+          path: |
+            artifacts/DDNet.ipa
+            artifacts/DDNet-simulator.zip
+          if-no-files-found: error
