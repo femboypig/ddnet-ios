@@ -26,6 +26,23 @@
 		     legacy scaling mode, which would letterbox the app on newer devices. -->
 		<key>UILaunchScreen</key>
 		<dict/>
+		<key>UIApplicationSceneManifest</key>
+		<dict>
+			<key>UIApplicationSupportsMultipleScenes</key>
+			<false/>
+			<key>UISceneConfigurations</key>
+			<dict>
+				<key>UIWindowSceneSessionRoleApplication</key>
+				<array>
+					<dict>
+						<key>UISceneConfigurationName</key>
+						<string>Default Configuration</string>
+						<key>UISceneDelegateClassName</key>
+						<string>DDNetAppDelegate</string>
+					</dict>
+				</array>
+			</dict>
+		</dict>
 		<key>UIRequiredDeviceCapabilities</key>
 		<array>
 			<string>arm64</string>
