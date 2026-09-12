@@ -38,7 +38,7 @@
 						<key>UISceneConfigurationName</key>
 						<string>Default Configuration</string>
 						<key>UISceneDelegateClassName</key>
-						<string>DDNetAppDelegate</string>
+						<string>DDNetSceneDelegate</string>
 					</dict>
 				</array>
 			</dict>
