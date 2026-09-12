@@ -872,7 +872,7 @@ int CInput::Update()
 				}
 				break;
 			case SDL_WINDOWEVENT_MINIMIZED:
-#if defined(CONF_PLATFORM_ANDROID) // Save the config when minimized on Android.
+#if defined(CONF_PLATFORM_ANDROID) || defined(CONF_PLATFORM_IOS) // Save config when minimized.
 				m_pConfigManager->Save();
 #endif
 				Graphics()->WindowDestroyNtf(Event.window.windowID);
