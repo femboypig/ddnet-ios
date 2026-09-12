@@ -31,7 +31,7 @@ on:
     paths:
       - '.github/workflows/build-ios.yml'
       - 'scripts/ios/**'
-      - 'src/ios/**'
+      - 'src/**'
       - 'CMakeLists.txt'
       - 'Cargo.toml'
       - 'Cargo.lock'
