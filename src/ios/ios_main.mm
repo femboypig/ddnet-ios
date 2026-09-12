@@ -56,7 +56,6 @@ extern "C" int SDL_main(int argc, char **argv);
 @end
 
 static UIWindow *s_pEarlyWindow = nil;
-static id (*s_pOrigInitFunc)(id, SEL) = NULL;
 static UIWindow *(*s_pOrigWindowFunc)(id, SEL) = NULL;
 static void (*s_pOrigSetWindowFunc)(id, SEL, UIWindow *) = NULL;
 static BOOL (*s_pOrigLaunchFunc)(id, SEL, UIApplication *, NSDictionary *) = NULL;
@@ -100,18 +99,6 @@ static UIWindow *EnsureEarlyWindow()
 	fflush(stdout);
 
 	return s_pEarlyWindow;
-}
-
-static id DDNet_SDLUIKitDelegate_init(id self, SEL _cmd)
-{
-	printf("[DDNet] SDLUIKitDelegate init\n");
-	fflush(stdout);
-	if(s_pOrigInitFunc)
-	{
-		self = s_pOrigInitFunc(self, _cmd);
-	}
-	EnsureEarlyWindow();
-	return self;
 }
 
 static UIWindow *DDNet_SDLUIKitDelegate_window(id self, SEL _cmd)
@@ -185,6 +172,35 @@ static void SetupSceneObserver()
 	}
 }
 
+static void SwizzleOrAddMethod(Class cls, SEL sel, IMP newImp, IMP *origImpOut, const char *types)
+{
+	Method origMethod = class_getInstanceMethod(cls, sel);
+	if(origMethod)
+	{
+		IMP origImp = method_getImplementation(origMethod);
+		if(origImpOut)
+		{
+			*origImpOut = origImp;
+		}
+		if(class_addMethod(cls, sel, newImp, method_getTypeEncoding(origMethod)))
+		{
+			Method subMethod = class_getInstanceMethod(cls, sel);
+			if(origImpOut)
+			{
+				*origImpOut = origImp;
+			}
+		}
+		else
+		{
+			method_setImplementation(origMethod, newImp);
+		}
+	}
+	else
+	{
+		class_addMethod(cls, sel, newImp, types);
+	}
+}
+
 static void PatchSDLUIKitDelegate()
 {
 	Class cls = NSClassFromString(@"SDLUIKitDelegate");
@@ -195,59 +211,10 @@ static void PatchSDLUIKitDelegate()
 		return;
 	}
 
-	Method origInitMethod = class_getInstanceMethod(cls, @selector(init));
-	if(origInitMethod)
-	{
-		s_pOrigInitFunc = (id (*)(id, SEL))method_getImplementation(origInitMethod);
-		method_setImplementation(origInitMethod, (IMP)DDNet_SDLUIKitDelegate_init);
-	}
-	else
-	{
-		class_addMethod(cls, @selector(init), (IMP)DDNet_SDLUIKitDelegate_init, "@@:");
-	}
-
-	Method origWindowMethod = class_getInstanceMethod(cls, @selector(window));
-	if(origWindowMethod)
-	{
-		s_pOrigWindowFunc = (UIWindow *(*)(id, SEL))method_getImplementation(origWindowMethod);
-		method_setImplementation(origWindowMethod, (IMP)DDNet_SDLUIKitDelegate_window);
-	}
-	else
-	{
-		class_addMethod(cls, @selector(window), (IMP)DDNet_SDLUIKitDelegate_window, "@@:");
-	}
-
-	Method origSetWindowMethod = class_getInstanceMethod(cls, @selector(setWindow:));
-	if(origSetWindowMethod)
-	{
-		s_pOrigSetWindowFunc = (void (*)(id, SEL, UIWindow *))method_getImplementation(origSetWindowMethod);
-		method_setImplementation(origSetWindowMethod, (IMP)DDNet_SDLUIKitDelegate_setWindow);
-	}
-	else
-	{
-		class_addMethod(cls, @selector(setWindow:), (IMP)DDNet_SDLUIKitDelegate_setWindow, "v@:@");
-	}
-
-	Method origLaunchMethod = class_getInstanceMethod(cls, @selector(application:didFinishLaunchingWithOptions:));
-	if(origLaunchMethod)
-	{
-		s_pOrigLaunchFunc = (BOOL (*)(id, SEL, UIApplication *, NSDictionary *))method_getImplementation(origLaunchMethod);
-		method_setImplementation(origLaunchMethod, (IMP)DDNet_SDLUIKitDelegate_didFinishLaunching);
-	}
-	else
-	{
-		class_addMethod(cls, @selector(application:didFinishLaunchingWithOptions:), (IMP)DDNet_SDLUIKitDelegate_didFinishLaunching, "B@:@@");
-	}
-
-	Method origOrientMethod = class_getInstanceMethod(cls, @selector(application:supportedInterfaceOrientationsForWindow:));
-	if(origOrientMethod)
-	{
-		method_setImplementation(origOrientMethod, (IMP)DDNet_SDLUIKitDelegate_supportedOrientations);
-	}
-	else
-	{
-		class_addMethod(cls, @selector(application:supportedInterfaceOrientationsForWindow:), (IMP)DDNet_SDLUIKitDelegate_supportedOrientations, "Q@:@@");
-	}
+	SwizzleOrAddMethod(cls, @selector(window), (IMP)DDNet_SDLUIKitDelegate_window, (IMP *)&s_pOrigWindowFunc, "@@:");
+	SwizzleOrAddMethod(cls, @selector(setWindow:), (IMP)DDNet_SDLUIKitDelegate_setWindow, (IMP *)&s_pOrigSetWindowFunc, "v@:@");
+	SwizzleOrAddMethod(cls, @selector(application:didFinishLaunchingWithOptions:), (IMP)DDNet_SDLUIKitDelegate_didFinishLaunching, (IMP *)&s_pOrigLaunchFunc, "B@:@@");
+	SwizzleOrAddMethod(cls, @selector(application:supportedInterfaceOrientationsForWindow:), (IMP)DDNet_SDLUIKitDelegate_supportedOrientations, NULL, "Q@:@@");
 
 	SetupSceneObserver();
 
