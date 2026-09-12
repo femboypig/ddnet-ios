@@ -28,20 +28,23 @@
 		<dict/>
 		<key>UIRequiredDeviceCapabilities</key>
 		<array>
-			<string>opengles-3</string>
+			<string>arm64</string>
 		</array>
 		<key>UISupportedInterfaceOrientations</key>
 		<array>
-			<string>UIInterfaceOrientationLandscapeLeft</string>
 			<string>UIInterfaceOrientationLandscapeRight</string>
+			<string>UIInterfaceOrientationLandscapeLeft</string>
+			<string>UIInterfaceOrientationPortrait</string>
 		</array>
 		<!-- Landscape-only apps must opt out of iPad multitasking -->
 		<key>UIRequiresFullScreen</key>
 		<true/>
 		<key>UISupportedInterfaceOrientations~ipad</key>
 		<array>
-			<string>UIInterfaceOrientationLandscapeLeft</string>
 			<string>UIInterfaceOrientationLandscapeRight</string>
+			<string>UIInterfaceOrientationLandscapeLeft</string>
+			<string>UIInterfaceOrientationPortrait</string>
+			<string>UIInterfaceOrientationPortraitUpsideDown</string>
 		</array>
 		<key>CFBundleURLTypes</key>
 		<array>
@@ -70,8 +73,10 @@
 		<key>UIStatusBarHidden</key>
 		<true/>
 		<key>UIViewControllerBasedStatusBarAppearance</key>
-		<false/>
+		<true/>
 		<key>UIApplicationSupportsIndirectInputEvents</key>
+		<true/>
+		<key>CADisableMinimumFrameDurationOnPhone</key>
 		<true/>
 		<!-- Only exempt standard TLS encryption is used, declaring it avoids a
 		     manual compliance answer in App Store Connect for every upload. -->
