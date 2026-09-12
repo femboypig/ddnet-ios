@@ -11,6 +11,7 @@
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <objc/runtime.h>
 
 #include <cmath>
 #include <csignal>
@@ -21,6 +22,144 @@
 
 extern "C" int SDL_UIKitRunApp(int argc, char **argv, int (*mainFunction)(int, char **));
 extern "C" int SDL_main(int argc, char **argv);
+
+@interface DDNetRootViewController : UIViewController
+@end
+
+@implementation DDNetRootViewController
+- (BOOL)shouldAutorotate
+{
+	return YES;
+}
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations
+{
+	return UIInterfaceOrientationMaskLandscape;
+}
+- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation
+{
+	return UIInterfaceOrientationLandscapeRight;
+}
+- (BOOL)prefersStatusBarHidden
+{
+	return YES;
+}
+- (BOOL)prefersHomeIndicatorAutoHidden
+{
+	return YES;
+}
+@end
+
+static UIWindow *s_pEarlyWindow = nil;
+static UIWindow *(*s_pOrigWindowFunc)(id, SEL) = NULL;
+static void (*s_pOrigSetWindowFunc)(id, SEL, UIWindow *) = NULL;
+static BOOL (*s_pOrigLaunchFunc)(id, SEL, UIApplication *, NSDictionary *) = NULL;
+
+static UIWindow *DDNet_SDLUIKitDelegate_window(id self, SEL _cmd)
+{
+	if(s_pOrigWindowFunc)
+	{
+		UIWindow *w = s_pOrigWindowFunc(self, _cmd);
+		if(w != nil)
+		{
+			if(s_pEarlyWindow != nil && s_pEarlyWindow != w)
+			{
+				s_pEarlyWindow.hidden = YES;
+				s_pEarlyWindow = nil;
+			}
+			return w;
+		}
+	}
+	return s_pEarlyWindow;
+}
+
+static void DDNet_SDLUIKitDelegate_setWindow(id self, SEL _cmd, UIWindow *w)
+{
+	s_pEarlyWindow = w;
+	if(s_pOrigSetWindowFunc)
+	{
+		s_pOrigSetWindowFunc(self, _cmd, w);
+	}
+}
+
+static BOOL DDNet_SDLUIKitDelegate_didFinishLaunching(id self, SEL _cmd, UIApplication *app, NSDictionary *opts)
+{
+	printf("--- DDNet Early App Launch ---\n");
+	fflush(stdout);
+
+	if(s_pEarlyWindow == nil)
+	{
+		CGRect bounds = [UIScreen mainScreen].bounds;
+		s_pEarlyWindow = [[UIWindow alloc] initWithFrame:bounds];
+		s_pEarlyWindow.backgroundColor = [UIColor blackColor];
+		DDNetRootViewController *rootVC = [[DDNetRootViewController alloc] init];
+		rootVC.view.frame = bounds;
+		rootVC.view.backgroundColor = [UIColor blackColor];
+		s_pEarlyWindow.rootViewController = rootVC;
+		[s_pEarlyWindow makeKeyAndVisible];
+		printf("--- DDNet Created Initial UIWindow (%dx%d) ---\n", (int)bounds.size.width, (int)bounds.size.height);
+		fflush(stdout);
+	}
+
+	BOOL result = YES;
+	if(s_pOrigLaunchFunc)
+	{
+		result = s_pOrigLaunchFunc(self, _cmd, app, opts);
+	}
+	return result;
+}
+
+static UIInterfaceOrientationMask DDNet_SDLUIKitDelegate_supportedOrientations(id self, SEL _cmd, UIApplication *app, UIWindow *window)
+{
+	return UIInterfaceOrientationMaskLandscape;
+}
+
+static void PatchSDLUIKitDelegate()
+{
+	Class cls = NSClassFromString(@"SDLUIKitDelegate");
+	if(!cls)
+	{
+		printf("PatchSDLUIKitDelegate: SDLUIKitDelegate class not found!\n");
+		fflush(stdout);
+		return;
+	}
+
+	Method origWindowMethod = class_getInstanceMethod(cls, @selector(window));
+	if(origWindowMethod)
+	{
+		s_pOrigWindowFunc = (UIWindow *(*)(id, SEL))method_getImplementation(origWindowMethod);
+		method_setImplementation(origWindowMethod, (IMP)DDNet_SDLUIKitDelegate_window);
+	}
+	else
+	{
+		class_addMethod(cls, @selector(window), (IMP)DDNet_SDLUIKitDelegate_window, "@@:");
+	}
+
+	Method origSetWindowMethod = class_getInstanceMethod(cls, @selector(setWindow:));
+	if(origSetWindowMethod)
+	{
+		s_pOrigSetWindowFunc = (void (*)(id, SEL, UIWindow *))method_getImplementation(origSetWindowMethod);
+		method_setImplementation(origSetWindowMethod, (IMP)DDNet_SDLUIKitDelegate_setWindow);
+	}
+	else
+	{
+		class_addMethod(cls, @selector(setWindow:), (IMP)DDNet_SDLUIKitDelegate_setWindow, "v@:@");
+	}
+
+	Method origLaunchMethod = class_getInstanceMethod(cls, @selector(application:didFinishLaunchingWithOptions:));
+	if(origLaunchMethod)
+	{
+		s_pOrigLaunchFunc = (BOOL (*)(id, SEL, UIApplication *, NSDictionary *))method_getImplementation(origLaunchMethod);
+		method_setImplementation(origLaunchMethod, (IMP)DDNet_SDLUIKitDelegate_didFinishLaunching);
+	}
+
+	Method origOrientMethod = class_getInstanceMethod(cls, @selector(application:supportedInterfaceOrientationsForWindow:));
+	if(!origOrientMethod)
+	{
+		class_addMethod(cls, @selector(application:supportedInterfaceOrientationsForWindow:), (IMP)DDNet_SDLUIKitDelegate_supportedOrientations, "Q@:@@");
+	}
+	printf("PatchSDLUIKitDelegate: Successfully hooked SDLUIKitDelegate window and lifecycle\n");
+	fflush(stdout);
+}
 
 static void IosUncaughtExceptionHandler(NSException *exception)
 {
@@ -157,6 +296,7 @@ int main(int argc, char **argv)
 	{
 		RedirectStdioToLog();
 		InstallCrashHandlers();
+		PatchSDLUIKitDelegate();
 	}
 	return SDL_UIKitRunApp(argc, argv, SDL_main);
 }
@@ -182,6 +322,10 @@ void IosDisplayCutoutInsets(SDL_Window *pWindow, int *pLeft, int *pRight)
 			}
 
 			UIWindow *pUiWindow = Info.info.uikit.window;
+			if(!pUiWindow)
+			{
+				pUiWindow = s_pEarlyWindow;
+			}
 			if(!pUiWindow)
 			{
 				return;
