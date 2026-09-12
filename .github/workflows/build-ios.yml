@@ -42,11 +42,10 @@ concurrency:
 
 jobs:
   build-ios-ipa:
-    name: Build iOS 27 IPA (${{ inputs.runner || 'xcode-27' }})
+    name: Build iOS IPA
     runs-on: ${{ inputs.runner || 'xcode-27' }}
     env:
       CARGO_HTTP_MULTIPLEXING: false
-      DEVELOPER_DIR: ''
 
     steps:
       - name: Checkout repository and submodules
@@ -70,6 +69,8 @@ jobs:
             sudo xcode-select -s "/Applications/Xcode.app/Contents/Developer"
           elif [ -d "/Applications/Xcode_26.6.app" ]; then
             sudo xcode-select -s "/Applications/Xcode_26.6.app/Contents/Developer"
+          elif [ -d "/Applications/Xcode_26.2.app" ]; then
+            sudo xcode-select -s "/Applications/Xcode_26.2.app/Contents/Developer"
           fi
 
           echo "=== Active Xcode Version ==="
@@ -91,33 +92,16 @@ jobs:
           workspaces: ./
 
       - name: Build iOS simulator app (debug)
-        if: ${{ inputs.run_simulator_test != false }}
+        if: ${{ github.event_name == 'push' || inputs.run_simulator_test != false }}
         run: |
           scripts/ios/cmake_ios.sh sim-arm64 DDNet org.ddnet.client Debug build-ios-sim
 
       - name: Smoke test iOS simulator app
-        if: ${{ inputs.run_simulator_test != false }}
+        if: ${{ github.event_name == 'push' || inputs.run_simulator_test != false }}
         timeout-minutes: 15
         run: |
           echo "=== Querying available iOS simulators ==="
-          xcrun simctl list devices available -j > available_devices.json
-          UDID=$(python3 -c '
-import json, sys
-data = json.load(open("available_devices.json"))
-devices = data.get("devices", {})
-found_udid = None
-for runtime, dev_list in devices.items():
-    for d in dev_list:
-        if d.get("isAvailable", True) and "iPhone" in d.get("name", ""):
-            found_udid = d["udid"]
-            print(f"Selected simulator: {d.get(\"name\")} ({found_udid}) on {runtime}", file=sys.stderr)
-            break
-    if found_udid:
-        break
-if not found_udid:
-    sys.exit(1)
-print(found_udid)
-')
+          UDID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; devs=json.load(sys.stdin)["devices"]; print(next(d["udid"] for dlist in devs.values() for d in dlist if d.get("isAvailable", True) and "iPhone" in d.get("name", "")))')
           echo "Booting simulator ${UDID}..."
           xcrun simctl bootstatus "${UDID}" -b
           echo "Installing DDNet.app on simulator..."
@@ -131,7 +115,7 @@ print(found_udid)
             echo "[NOTICE] Simulator launch completed (see logs above)"
           fi
 
-      - name: Build iOS device application (${{ inputs.build_type || 'Release' }})
+      - name: Build iOS device application
         run: |
           BUILD_TYPE="${{ inputs.build_type || 'Release' }}"
           scripts/ios/cmake_ios.sh device DDNet org.ddnet.client "${BUILD_TYPE}" build-ios-device
