@@ -108,8 +108,27 @@ jobs:
           xcrun simctl install "${UDID}" build-ios-sim/Debug-iphonesimulator/DDNet.app
           echo "Launching DDNet on simulator with command quit..."
           xcrun simctl launch --console-pty "${UDID}" org.ddnet.client quit > simulator-console.log 2>&1 || true
+          echo "=== Simulator console log ==="
           cat simulator-console.log
-          if grep -q "config: saved to settings_ddnet.cfg" simulator-console.log; then
+          CONTAINER=$(xcrun simctl get_app_container "${UDID}" org.ddnet.client data 2>/dev/null || true)
+          if [ -n "${CONTAINER}" ] && [ -d "${CONTAINER}/Documents" ]; then
+            echo "=== Simulator Documents container: ${CONTAINER}/Documents ==="
+            ls -la "${CONTAINER}/Documents"
+            if [ -f "${CONTAINER}/Documents/boot.log" ]; then
+              echo "=== boot.log ==="
+              cat "${CONTAINER}/Documents/boot.log"
+            fi
+            if [ -f "${CONTAINER}/Documents/crash.log" ]; then
+              echo "=== crash.log ==="
+              cat "${CONTAINER}/Documents/crash.log"
+            fi
+          fi
+          CRASH_REPORTS=$(find ~/Library/Logs/DiagnosticReports/ -name "*DDNet*" 2>/dev/null || true)
+          if [ -n "${CRASH_REPORTS}" ]; then
+            echo "=== DiagnosticReports ==="
+            cat ${CRASH_REPORTS}
+          fi
+          if grep -q "config: saved to settings_ddnet.cfg" simulator-console.log || ([ -f "${CONTAINER}/Documents/boot.log" ] && grep -q "config: saved to settings_ddnet.cfg" "${CONTAINER}/Documents/boot.log"); then
             echo "[SUCCESS] Simulator ran DDNet and successfully saved settings_ddnet.cfg on quit!"
           else
             echo "[NOTICE] Simulator launch completed (see logs above)"
