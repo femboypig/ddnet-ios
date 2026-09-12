@@ -209,6 +209,8 @@ static void SetupSceneObserver()
 						[s_pEarlyWindow makeKeyAndVisible];
 						printf("[DDNet] Attached early window to connected UIWindowScene %p\n", scene);
 					}
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 					for(UIWindow *w in [UIApplication sharedApplication].windows)
 					{
 						if(w.windowScene == nil)
@@ -217,20 +219,11 @@ static void SetupSceneObserver()
 							printf("[DDNet] Attached window %p to connected UIWindowScene %p\n", w, scene);
 						}
 					}
+#pragma clang diagnostic pop
 					fflush(stdout);
 				}
 			}];
 	}
-}
-
-static void PatchUIWindow()
-{
-	Class cls = NSClassFromString(@"UIWindow");
-	if(!cls)
-	{
-		return;
-	}
-	SwizzleOrAddMethod(cls, @selector(makeKeyAndVisible), (IMP)DDNet_UIWindow_makeKeyAndVisible, (IMP *)&s_pOrigMakeKeyAndVisible, "v@:");
 }
 
 static void SwizzleOrAddMethod(Class cls, SEL sel, IMP newImp, IMP *origImpOut, const char *types)
@@ -245,7 +238,6 @@ static void SwizzleOrAddMethod(Class cls, SEL sel, IMP newImp, IMP *origImpOut, 
 		}
 		if(class_addMethod(cls, sel, newImp, method_getTypeEncoding(origMethod)))
 		{
-			Method subMethod = class_getInstanceMethod(cls, sel);
 			if(origImpOut)
 			{
 				*origImpOut = origImp;
@@ -260,6 +252,16 @@ static void SwizzleOrAddMethod(Class cls, SEL sel, IMP newImp, IMP *origImpOut, 
 	{
 		class_addMethod(cls, sel, newImp, types);
 	}
+}
+
+static void PatchUIWindow()
+{
+	Class cls = NSClassFromString(@"UIWindow");
+	if(!cls)
+	{
+		return;
+	}
+	SwizzleOrAddMethod(cls, @selector(makeKeyAndVisible), (IMP)DDNet_UIWindow_makeKeyAndVisible, (IMP *)&s_pOrigMakeKeyAndVisible, "v@:");
 }
 
 static void PatchSDLUIKitDelegate()
