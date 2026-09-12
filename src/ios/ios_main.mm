@@ -19,7 +19,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <unistd.h>
+#include <sys/ucontext.h>
 
+extern "C" const char *__crashreporter_info__ __attribute__((weak));
 extern "C" int SDL_UIKitRunApp(int argc, char **argv, int (*mainFunction)(int, char **));
 extern "C" int SDL_main(int argc, char **argv);
 
@@ -39,7 +41,7 @@ extern "C" int SDL_main(int argc, char **argv);
 }
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations
 {
-	return UIInterfaceOrientationMaskLandscape;
+	return UIInterfaceOrientationMaskAllButUpsideDown;
 }
 - (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation
 {
@@ -146,7 +148,47 @@ static BOOL DDNet_SDLUIKitDelegate_didFinishLaunching(id self, SEL _cmd, UIAppli
 
 static UIInterfaceOrientationMask DDNet_SDLUIKitDelegate_supportedOrientations(id self, SEL _cmd, UIApplication *app, UIWindow *window)
 {
-	return UIInterfaceOrientationMaskLandscape;
+	if(window != nil && window != s_pEarlyWindow)
+	{
+		return UIInterfaceOrientationMaskLandscape;
+	}
+	return UIInterfaceOrientationMaskAllButUpsideDown;
+}
+
+static void (*s_pOrigMakeKeyAndVisible)(id, SEL) = NULL;
+
+static void DDNet_UIWindow_makeKeyAndVisible(id self, SEL _cmd)
+{
+	UIWindow *w = (UIWindow *)self;
+	if(@available(iOS 13.0, *))
+	{
+		if(w.windowScene == nil)
+		{
+			for(UIScene *scene in [UIApplication sharedApplication].connectedScenes)
+			{
+				if([scene isKindOfClass:[UIWindowScene class]])
+				{
+					w.windowScene = (UIWindowScene *)scene;
+					printf("[DDNet] Connected UIWindow %p to UIWindowScene %p\n", w, scene);
+					break;
+				}
+			}
+		}
+	}
+
+	if(s_pOrigMakeKeyAndVisible)
+	{
+		s_pOrigMakeKeyAndVisible(self, _cmd);
+	}
+
+	if(s_pEarlyWindow != nil && w != s_pEarlyWindow)
+	{
+		printf("[DDNet] Transitioned from early splash window %p to game window %p\n", s_pEarlyWindow, w);
+		s_pEarlyWindow.hidden = YES;
+		s_pEarlyWindow.rootViewController = nil;
+		s_pEarlyWindow = nil;
+	}
+	fflush(stdout);
 }
 
 static void SetupSceneObserver()
@@ -158,18 +200,37 @@ static void SetupSceneObserver()
 			queue:[NSOperationQueue mainQueue]
 			usingBlock:^(NSNotification *note) {
 				UIScene *scene = note.object;
-				if([scene isKindOfClass:[UIWindowScene class]] && s_pEarlyWindow != nil)
+				if([scene isKindOfClass:[UIWindowScene class]])
 				{
-					if(s_pEarlyWindow.windowScene == nil)
+					printf("[DDNet] UISceneWillConnectNotification for scene %p\n", scene);
+					if(s_pEarlyWindow != nil && s_pEarlyWindow.windowScene == nil)
 					{
 						s_pEarlyWindow.windowScene = (UIWindowScene *)scene;
 						[s_pEarlyWindow makeKeyAndVisible];
 						printf("[DDNet] Attached early window to connected UIWindowScene %p\n", scene);
-						fflush(stdout);
 					}
+					for(UIWindow *w in [UIApplication sharedApplication].windows)
+					{
+						if(w.windowScene == nil)
+						{
+							w.windowScene = (UIWindowScene *)scene;
+							printf("[DDNet] Attached window %p to connected UIWindowScene %p\n", w, scene);
+						}
+					}
+					fflush(stdout);
 				}
 			}];
 	}
+}
+
+static void PatchUIWindow()
+{
+	Class cls = NSClassFromString(@"UIWindow");
+	if(!cls)
+	{
+		return;
+	}
+	SwizzleOrAddMethod(cls, @selector(makeKeyAndVisible), (IMP)DDNet_UIWindow_makeKeyAndVisible, (IMP *)&s_pOrigMakeKeyAndVisible, "v@:");
 }
 
 static void SwizzleOrAddMethod(Class cls, SEL sel, IMP newImp, IMP *origImpOut, const char *types)
@@ -256,6 +317,30 @@ static void IosSignalHandler(int sig, siginfo_t *info, void *context)
 	{
 		[report appendFormat:@"Fault address: %p\n", info->si_addr];
 	}
+	if(__crashreporter_info__ && *__crashreporter_info__)
+	{
+		[report appendFormat:@"Crash Reporter Info: %s\n", __crashreporter_info__];
+	}
+#if defined(__arm64__) || defined(__aarch64__)
+	if(context)
+	{
+		ucontext_t *uc = (ucontext_t *)context;
+		if(uc && uc->uc_mcontext)
+		{
+			[report appendFormat:@"PC: 0x%016llx  LR: 0x%016llx  SP: 0x%016llx  FP: 0x%016llx\n",
+				(unsigned long long)uc->uc_mcontext->__ss.__pc,
+				(unsigned long long)uc->uc_mcontext->__ss.__lr,
+				(unsigned long long)uc->uc_mcontext->__ss.__sp,
+				(unsigned long long)uc->uc_mcontext->__ss.__fp];
+			for(int i = 0; i < 29; i += 2)
+			{
+				[report appendFormat:@"x%-2d: 0x%016llx  x%-2d: 0x%016llx\n",
+					i, (unsigned long long)uc->uc_mcontext->__ss.__x[i],
+					i + 1, (i + 1 < 29) ? (unsigned long long)uc->uc_mcontext->__ss.__x[i + 1] : 0ULL];
+			}
+		}
+	}
+#endif
 	[report appendString:@"Call Stack:\n"];
 	for(NSString *symbol in [NSThread callStackSymbols])
 	{
@@ -358,6 +443,7 @@ int main(int argc, char **argv)
 		RedirectStdioToLog();
 		InstallCrashHandlers();
 		PatchSDLUIKitDelegate();
+		PatchUIWindow();
 		if([UIApplication sharedApplication] != nil)
 		{
 			EnsureEarlyWindow();
